@@ -1,16 +1,24 @@
 package game
+import akka.actor.typed.pubsub.Topic
+import akka.actor.typed.pubsub.Topic.Command
+import akka.actor.typed.scaladsl.AskPattern.Askable
+import akka.actor.typed.scaladsl.Behaviors
 import akka.actor.typed.{ActorRef, Behavior}
+import game.Cell.Neighbors
+
+import scala.concurrent.duration.DurationInt
+import scala.concurrent.{ExecutionContext, Future}
+import scala.util.{Failure, Success}
 
 object cellADT {
   sealed trait CellEvent
 
-  /** Game rules */
-  case object Revive extends CellEvent
-  case object Die    extends CellEvent
+  case object Mutate extends CellEvent
 
   /** Service messages */
-  case object ShowUp                             extends CellEvent
+  case class SetNeighbors(neighbors: Neighbors)  extends CellEvent
   case class ShowState(replyTo: ActorRef[State]) extends CellEvent
+  case object ShowUp                             extends CellEvent
 
   /** Cell state */
   sealed trait State
@@ -19,37 +27,63 @@ object cellADT {
 }
 
 object Cell {
-  import akka.actor.typed.scaladsl.Behaviors._
+  import Behaviors._
   import cellADT._
 
-  def apply(initialState: State): Behavior[CellEvent] =
+  private case object Revive extends CellEvent
+  private case object Die    extends CellEvent
+
+  type Neighbors = Set[ActorRef[CellEvent]]
+
+  def apply(initialState: State, topic: ActorRef[Command[CellEvent]]): Behavior[CellEvent] = Behaviors.setup { ctx =>
+    topic ! Topic.Subscribe(ctx.self)
+
     initialState match {
-      case Alive => alive
-      case Dead  => dead
+      case Alive => alive(Set.empty)
+      case Dead  => dead(Set.empty)
     }
-
-  private def alive: Behavior[CellEvent] = receiveMessage {
-    case Die                => dead
-    case Revive             => same
-    case ShowState(replyTo) =>
-      replyTo ! Alive
-      same
-    case ShowUp             => showUp(Alive)
-    case _                  => unhandled
   }
 
-  private def dead: Behavior[CellEvent] = receiveMessage {
-    case Revive             => alive
-    case Die                => same
-    case ShowState(replyTo) =>
-      replyTo ! Dead
-      same
-    case ShowUp             => showUp(Dead)
-    case _                  => unhandled
+  private def alive(neighbors: Neighbors): Behavior[CellEvent] = logMessages {
+    receiveMessage {
+      case Die                => dead(neighbors)
+      case Revive             => same
+      case Mutate             => mutate(Alive, neighbors)
+      case ShowState(replyTo) =>
+        replyTo ! Alive
+        same
+      case SetNeighbors(n)    => alive(n)
+      case _                  => unhandled
+    }
   }
 
-  private def showUp(state: State): Behavior[CellEvent] = setup { ctx =>
-    ctx.log.info(s"I am ${ctx.self.path.name} and I am $state")
-    same
+  private def dead(neighbors: Neighbors): Behavior[CellEvent] = logMessages {
+    receiveMessage {
+      case Revive             => alive(neighbors)
+      case Die                => same
+      case Mutate             => mutate(Dead, neighbors)
+      case ShowState(replyTo) =>
+        replyTo ! Dead
+        same
+      case SetNeighbors(n)    => dead(n)
+      case _                  => unhandled
+    }
+  }
+
+  private def mutate(state: State, neighbors: Neighbors): Behavior[CellEvent] = logMessages {
+    setup { ctx =>
+      implicit val ec: ExecutionContext = ctx.executionContext
+
+      Future
+        .sequence(neighbors.toSeq.map(n => n.ask(ShowState)(2.seconds, ctx.system.scheduler)))
+        .map(n => state -> n.filterNot(_ == Dead).size)
+        .onComplete {
+          case Success(Alive -> n) if n <= 1 || n >= 4 => ctx.self ! Die
+          case Success(Dead -> n) if n == 3            => ctx.self ! Revive
+          case Success(_)                              => ()
+          case Failure(exception)                      => throw exception
+        }
+      same
+    }
   }
 }
