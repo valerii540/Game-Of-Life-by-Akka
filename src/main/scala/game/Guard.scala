@@ -1,39 +1,51 @@
 package game
 
-import akka.actor.typed.pubsub.Topic
-import akka.actor.typed.scaladsl.Behaviors
-import akka.actor.typed.{ActorRef, Behavior}
+import akka.actor.typed.scaladsl.AskPattern._
+import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
+import akka.actor.typed.{ActorRef, Behavior, Scheduler}
 import game.cellADT._
 import ui.ConsoleWriter
 
-import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.DurationInt
+import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.util.{Random, Try}
 
 object Guard {
   type Board = IndexedSeq[IndexedSeq[ActorRef[CellEvent]]]
 
   def apply(rows: Int, columns: Int): Behavior[Unit] =
-    Behaviors.setup { ctx =>
+    Behaviors.setup { implicit ctx =>
       implicit val ec: ExecutionContext = ctx.executionContext
+      implicit val scheduler: Scheduler = ctx.system.scheduler
 
-      val topic = ctx.spawn(Topic[CellEvent]("topic"), "master-of-puppets")
+      val board  = spawnCells(rows, columns)
+      val actors = board.flatten
 
-      val board = IndexedSeq.tabulate(rows, columns)((r, c) => ctx.spawn(Cell(deadOrAlive, topic), s"cell-$r-$c"))
+      var epoch: Long = 0
+      ctx.system.scheduler.scheduleAtFixedRate(2.seconds, 200.millis) { () =>
+        epoch += 1
+        val f =
+          ConsoleWriter.write(board, epoch).flatMap { _ =>
+            Future
+              .traverse(actors)(a => a.ask(NextState)(2.seconds, scheduler).map(a -> _))
+              .flatMap { as =>
+                Future.traverse(as) { case (actor, nextState) =>
+                  actor.ask(r => MutateTo(r, nextState))(2.seconds, scheduler)
+                }
+              }
+          }
 
-      setNeighbors(board)
-
-      val consoleUI = new ConsoleWriter(board, ctx.system)
-
-      ctx.system.scheduler.scheduleAtFixedRate(2.seconds, 300.millis) { () =>
-        consoleUI.write()
-        topic ! Topic.Publish(Mutate)
+        Await.result(f, 5.seconds)
       }
 
       Behaviors.empty
     }
 
-  private def setNeighbors(board: Board): Unit =
+  private def spawnCells(rows: Int, columns: Int)(implicit ctx: ActorContext[_]): Board = {
+    def deadOrAlive() = if (Random.nextInt(100) < 20) Alive else Dead
+
+    val board = IndexedSeq.tabulate(rows, columns)((r, c) => ctx.spawn(Cell(deadOrAlive()), s"cell-$r-$c"))
+
     for {
       row       <- board.indices
       col       <- board(row).indices
@@ -50,5 +62,6 @@ object Guard {
         ).flatten
     } board(row)(col) ! SetNeighbors(neighbours)
 
-  private def deadOrAlive: State = if (Random.nextInt(100) < 10) Alive else Dead
+    board
+  }
 }
