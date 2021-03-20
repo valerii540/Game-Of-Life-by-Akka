@@ -4,44 +4,42 @@ import akka.actor.typed.scaladsl.AskPattern._
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior, Scheduler}
 import game.cellADT._
-import ui.ConsoleWriter
 
 import scala.concurrent.duration.DurationInt
 import scala.concurrent.{Await, ExecutionContext, Future}
-import scala.util.{Random, Try}
+import scala.util.{Failure, Random, Success, Try}
 
 object Guard {
-  type Board = IndexedSeq[IndexedSeq[ActorRef[CellEvent]]]
+  type MatrixOfActors = IndexedSeq[IndexedSeq[ActorRef[CellEvent]]]
 
-  def apply(rows: Int, columns: Int): Behavior[Unit] =
-    Behaviors.setup { implicit ctx =>
-      implicit val ec: ExecutionContext = ctx.executionContext
-      implicit val scheduler: Scheduler = ctx.system.scheduler
+  sealed trait GuardEvent
+  case class ShowBoard(replyTo: ActorRef[Response]) extends GuardEvent
 
-      val board  = spawnCells(rows, columns)
-      val actors = board.flatten
+  private var epoch = 1L
 
-      var epoch: Long = 0
-      ctx.system.scheduler.scheduleAtFixedRate(2.seconds, 200.millis) { () =>
-        epoch += 1
-        val f =
-          ConsoleWriter.write(board, epoch).flatMap { _ =>
-            Future
-              .traverse(actors)(a => a.ask(NextState)(2.seconds, scheduler).map(a -> _))
-              .flatMap { as =>
-                Future.traverse(as) { case (actor, nextState) =>
-                  actor.ask(r => MutateTo(r, nextState))(2.seconds, scheduler)
-                }
-              }
-          }
+  def apply(rows: Int, columns: Int): Behavior[GuardEvent] = Behaviors.setup { implicit ctx =>
+    implicit val ec: ExecutionContext = ctx.executionContext
+    implicit val scheduler: Scheduler = ctx.system.scheduler
 
-        Await.result(f, 5.seconds)
-      }
+    val boardOfActors = spawnCells(rows, columns)
+    val actors        = boardOfActors.flatten
 
-      Behaviors.empty
+    ctx.system.scheduler
+      .scheduleAtFixedRate(2.seconds, 1000.millis)(() => Await.result(mutateAllAsync(actors), 5.seconds))
+
+    Behaviors.receiveMessage { case ShowBoard(replyTo) =>
+      Future
+        .traverse(boardOfActors)(row => Future.sequence(row.map(a => a.ask(ShowState)(2.seconds, ctx.system.scheduler))))
+        .onComplete {
+          case Success(boardOfStates) => replyTo ! Response(epoch, boardOfStates)
+          case Failure(exception)     => throw exception
+        }
+
+      Behaviors.same
     }
+  }
 
-  private def spawnCells(rows: Int, columns: Int)(implicit ctx: ActorContext[_]): Board = {
+  private def spawnCells(rows: Int, columns: Int)(implicit ctx: ActorContext[_]): MatrixOfActors = {
     def deadOrAlive() = if (Random.nextInt(100) < 20) Alive else Dead
 
     val board = IndexedSeq.tabulate(rows, columns)((r, c) => ctx.spawn(Cell(deadOrAlive()), s"cell-$r-$c"))
@@ -64,4 +62,16 @@ object Guard {
 
     board
   }
+
+  private def mutateAllAsync(actors: Seq[ActorRef[CellEvent]])(implicit
+      ex: ExecutionContext,
+      scheduler: Scheduler
+  ): Future[Unit] =
+    Future
+      .traverse(actors)(a => a.ask(NextState)(2.seconds, scheduler).map(a -> _))
+      .flatMap { as =>
+        Future.traverse(as) { case (actor, nextState) =>
+          actor.ask(r => MutateTo(r, nextState))(2.seconds, scheduler)
+        }
+      }.map(_ => epoch += 1)
 }
