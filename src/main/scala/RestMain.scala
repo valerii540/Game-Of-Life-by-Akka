@@ -7,6 +7,7 @@ import akka.util.Timeout
 import game.Guard
 import game.Guard.{GuardEvent, ShowBoard}
 import game.Response.asJson
+import kamon.Kamon
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.DurationInt
@@ -14,6 +15,8 @@ import scala.util.{Failure, Success}
 
 object RestMain {
   def main(args: Array[String]): Unit = {
+    Kamon.init()
+
     implicit val system: ActorSystem[GuardEvent] = ActorSystem(Guard(args(0).toInt, args(1).toInt), "universe")
     implicit val aksTimeout: Timeout             = 5.seconds
     implicit val ex: ExecutionContext            = system.executionContext
@@ -33,7 +36,7 @@ object RestMain {
     sys.addShutdownHook {
       bindingFuture
         .flatMap(_.unbind())
-        .onComplete(_ => system.terminate())
+        .onComplete(_ => Kamon.stop().onComplete(_ => system.terminate()))
     }
   }
 }

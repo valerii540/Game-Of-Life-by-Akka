@@ -7,13 +7,16 @@ scalaVersion := "2.13.5"
 fork := true
 
 libraryDependencies ++= {
-  val akkaVersion = "2.6.13"
+  val akka  = "2.6.13"
+  val kamon = "2.1.13"
 
   Seq(
-    "ch.qos.logback"     % "logback-classic"  % "1.2.3",
-    "com.typesafe.akka" %% "akka-actor-typed" % akkaVersion,
-    "com.typesafe.akka" %% "akka-stream"      % akkaVersion,
-    "com.typesafe.akka" %% "akka-http"        % "10.2.4"
+    "ch.qos.logback"     % "logback-classic"    % "1.2.3",
+    "com.typesafe.akka" %% "akka-actor-typed"   % akka,
+    "com.typesafe.akka" %% "akka-stream"        % akka,
+    "com.typesafe.akka" %% "akka-http"          % "10.2.4",
+    "io.kamon"          %% "kamon-bundle"       % kamon,
+    "io.kamon"          %% "kamon-apm-reporter" % kamon
   )
 }
 

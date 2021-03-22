@@ -4,6 +4,7 @@ import akka.actor.typed.scaladsl.AskPattern._
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior, Scheduler}
 import game.cellADT._
+import monitoring.KamonReporter
 
 import scala.concurrent.duration.DurationInt
 import scala.concurrent.{Await, ExecutionContext, Future}
@@ -21,18 +22,18 @@ object Guard {
     implicit val ec: ExecutionContext = ctx.executionContext
     implicit val scheduler: Scheduler = ctx.system.scheduler
 
-    val boardOfActors = spawnCells(rows, columns)
-    val actors        = boardOfActors.flatten
+    val matrix = spawnCells(rows, columns)
+    val actors = matrix.flatten
 
     ctx.system.scheduler
-      .scheduleAtFixedRate(2.seconds, 1000.millis)(() => Await.result(mutateAllAsync(actors), 5.seconds))
+      .scheduleAtFixedRate(5.seconds, 1000.millis)(() => Await.result(mutateAllAsync(actors), 5.seconds))
 
     Behaviors.receiveMessage { case ShowBoard(replyTo) =>
       Future
-        .traverse(boardOfActors)(row => Future.sequence(row.map(a => a.ask(ShowState)(2.seconds, ctx.system.scheduler))))
+        .traverse(matrix)(row => Future.sequence(row.map(a => a.ask(ShowState)(2.seconds, ctx.system.scheduler))))
         .onComplete {
-          case Success(boardOfStates) => replyTo ! Response(epoch, boardOfStates)
-          case Failure(exception)     => throw exception
+          case Success(matrixOfStates) => replyTo ! Response(epoch, matrixOfStates)
+          case Failure(exception)      => throw exception
         }
 
       Behaviors.same
@@ -66,12 +67,17 @@ object Guard {
   private def mutateAllAsync(actors: Seq[ActorRef[CellEvent]])(implicit
       ex: ExecutionContext,
       scheduler: Scheduler
-  ): Future[Unit] =
+  ): Future[Unit] = {
+    val timer = KamonReporter.mutationLatencyTimer.start()
     Future
       .traverse(actors)(a => a.ask(NextState)(2.seconds, scheduler).map(a -> _))
       .flatMap { as =>
         Future.traverse(as) { case (actor, nextState) =>
           actor.ask(r => MutateTo(r, nextState))(2.seconds, scheduler)
         }
-      }.map(_ => epoch += 1)
+      }.map { _ =>
+        epoch += 1
+        timer.stop()
+      }
+  }
 }
