@@ -14,7 +14,7 @@ object Guard {
   type MatrixOfActors = IndexedSeq[IndexedSeq[ActorRef[CellEvent]]]
 
   sealed trait GuardEvent
-  case class ShowBoard(replyTo: ActorRef[Response]) extends GuardEvent
+  final case class ShowBoard(replyTo: ActorRef[Response]) extends GuardEvent
 
   private var epoch = 1L
 
@@ -49,7 +49,7 @@ object Guard {
       row       <- board.indices
       col       <- board(row).indices
       neighbours =
-        Set(
+        Seq(
           Try(board(row - 1)(col + 1)).toOption, // TR
           Try(board(row - 1)(col - 1)).toOption, // TL
           Try(board(row)(col - 1)).toOption,     // L
