@@ -1,5 +1,6 @@
 package game
 
+import akka.Done
 import akka.actor.typed.scaladsl.AskPattern._
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior, Scheduler}
@@ -70,10 +71,11 @@ object Guard {
   ): Future[Unit] = {
     val timer = KamonReporter.mutationLatencyTimer.start()
     Future
-      .traverse(actors)(a => a.ask(NextState)(2.seconds, scheduler).map(a -> _))
+      .traverse(actors)(a => a.ask(CurrentAndNextState)(2.seconds, scheduler).map(a -> _))
       .flatMap { as =>
-        Future.traverse(as) { case (actor, nextState) =>
-          actor.ask(r => MutateTo(r, nextState))(2.seconds, scheduler)
+        Future.traverse(as) {
+          case (actor, (now, next)) if now != next => actor.ask(r => MutateTo(r, next))(2.seconds, scheduler)
+          case _                                   => Future.successful(Done)
         }
       }.map { _ =>
         epoch += 1
